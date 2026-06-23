@@ -3,7 +3,7 @@ import { PdfPageInfo, PdfDocumentInfo } from "@/hooks/use-pdf";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import { PdfTile } from "./pdf-tile";
 import { PdfToolbar } from "./pdf-toolbar";
-import { CanvasDocument } from "./canvas-document";
+import { CanvasPage } from "./canvas-page";
 import { GridBackground } from "./grid-background";
 import { useCanvasPositions } from "@/hooks/use-canvas-positions";
 
@@ -30,17 +30,11 @@ export function PdfMap({
   mode,
   setMode,
 }: PdfMapProps) {
-  const docIds = useMemo(() => documents.map((d) => d.id), [documents]);
-  const { positions, updatePosition } = useCanvasPositions(docIds);
-
-  const pagesByDoc = useMemo(() => {
-    const map: Record<string, PdfPageInfo[]> = {};
-    for (const page of pages) {
-      if (!map[page.pdfId]) map[page.pdfId] = [];
-      map[page.pdfId].push(page);
-    }
-    return map;
-  }, [pages]);
+  const pageIds = useMemo(
+    () => pages.map((p) => `${p.pdfId}-${p.pageNumber}`),
+    [pages]
+  );
+  const { positions, updatePosition } = useCanvasPositions(pageIds);
 
   return (
     <div className="h-screen w-full bg-background overflow-hidden select-none relative">
@@ -55,7 +49,6 @@ export function PdfMap({
         panning={{ velocityDisabled: false }}
         doubleClick={{ disabled: true }}
       >
-        {/* Dot grid background — canvas mode only */}
         {mode === "canvas" && <GridBackground show={true} />}
 
         <TransformComponent
@@ -84,16 +77,17 @@ export function PdfMap({
                 height: 6000,
               }}
             >
-              {documents.map((doc) => (
-                <CanvasDocument
-                  key={doc.id}
-                  doc={doc}
-                  pages={pagesByDoc[doc.id] ?? []}
-                  position={positions[doc.id] ?? { x: 80, y: 80 }}
-                  onPositionChange={updatePosition}
-                  isEditMode={true}
-                />
-              ))}
+              {pages.map((page) => {
+                const id = `${page.pdfId}-${page.pageNumber}`;
+                return (
+                  <CanvasPage
+                    key={id}
+                    page={page}
+                    position={positions[id] ?? { x: 80, y: 80 }}
+                    onPositionChange={updatePosition}
+                  />
+                );
+              })}
             </div>
           )}
         </TransformComponent>
