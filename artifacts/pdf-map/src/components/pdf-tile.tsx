@@ -5,27 +5,59 @@ import { cn } from "@/lib/utils";
 
 interface PdfTileProps {
   page: PdfPageInfo;
-  zoom: number;
 }
 
 const BASE_SCALE = 1.5;
+const INITIAL_RENDER_ZOOM = 1;
+const MAX_RENDER_ZOOM = 2;
+const MAX_CANVAS_PIXELS = 8_000_000;
+const RERENDER_ZOOM_THRESHOLD = 0.25;
+const ZOOM_IDLE_EVENT = "pdf-map:zoom-idle";
 
-export function PdfTile({ page, zoom }: PdfTileProps) {
+function getBoundedRenderScale(
+  displayWidth: number,
+  displayHeight: number,
+  requestedZoom: number,
+) {
+  const requestedPixelRatio = Math.min(
+    (window.devicePixelRatio || 1) * requestedZoom,
+    MAX_RENDER_ZOOM,
+  );
+  const requestedPixels =
+    displayWidth * requestedPixelRatio * displayHeight * requestedPixelRatio;
+
+  if (requestedPixels <= MAX_CANVAS_PIXELS) {
+    return BASE_SCALE * requestedPixelRatio;
+  }
+
+  const boundedPixelRatio = Math.sqrt(
+    MAX_CANVAS_PIXELS / (displayWidth * displayHeight),
+  );
+  return (
+    BASE_SCALE * Math.max(1, Math.min(requestedPixelRatio, boundedPixelRatio))
+  );
+}
+
+export function PdfTile({ page }: PdfTileProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isRendered, setIsRendered] = useState(false);
-  const [displayDimensions, setDisplayDimensions] = useState({ width: 0, height: 0 });
+  const [displayDimensions, setDisplayDimensions] = useState({
+    width: 0,
+    height: 0,
+  });
   const renderTaskRef = useRef<pdfjsLib.RenderTask | null>(null);
-  const renderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hasInitialRender = useRef(false);
+  const lastRenderedZoomRef = useRef(0);
 
   const renderAtScale = useCallback(
-    async (renderZoom: number) => {
+    async (requestedZoom: number) => {
       try {
         const pdfPage = await page.document.getPage(page.pageNumber);
-
-        const devicePixelRatio = window.devicePixelRatio || 1;
         const displayViewport = pdfPage.getViewport({ scale: BASE_SCALE });
-        const renderScale = BASE_SCALE * devicePixelRatio * renderZoom;
+        const renderScale = getBoundedRenderScale(
+          displayViewport.width,
+          displayViewport.height,
+          requestedZoom,
+        );
         const renderViewport = pdfPage.getViewport({ scale: renderScale });
 
         setDisplayDimensions({
@@ -50,6 +82,7 @@ export function PdfTile({ page, zoom }: PdfTileProps) {
         canvas.style.height = `${displayViewport.height}px`;
 
         const task = pdfPage.render({
+          canvas,
           canvasContext: context,
           viewport: renderViewport,
         });
@@ -57,6 +90,7 @@ export function PdfTile({ page, zoom }: PdfTileProps) {
 
         await task.promise;
         renderTaskRef.current = null;
+        lastRenderedZoomRef.current = requestedZoom;
         setIsRendered(true);
       } catch (err: any) {
         if (err.name !== "RenderingCancelledException") {
@@ -64,58 +98,37 @@ export function PdfTile({ page, zoom }: PdfTileProps) {
         }
       }
     },
-    [page]
+    [page],
   );
 
   useEffect(() => {
-    hasInitialRender.current = false;
+    lastRenderedZoomRef.current = 0;
     setIsRendered(false);
-
-    if (renderTaskRef.current) {
-      renderTaskRef.current.cancel();
-      renderTaskRef.current = null;
-    }
-    if (renderTimerRef.current) {
-      clearTimeout(renderTimerRef.current);
-      renderTimerRef.current = null;
-    }
-
-    renderAtScale(zoom);
-    hasInitialRender.current = true;
+    renderAtScale(INITIAL_RENDER_ZOOM);
 
     return () => {
       if (renderTaskRef.current) {
         renderTaskRef.current.cancel();
         renderTaskRef.current = null;
       }
-      if (renderTimerRef.current) {
-        clearTimeout(renderTimerRef.current);
-        renderTimerRef.current = null;
-      }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, renderAtScale]);
 
   useEffect(() => {
-    if (!hasInitialRender.current) return;
-
-    if (renderTimerRef.current) {
-      clearTimeout(renderTimerRef.current);
-    }
-
-    renderTimerRef.current = setTimeout(() => {
-      renderTimerRef.current = null;
-      renderAtScale(zoom);
-    }, 200);
-
-    return () => {
-      if (renderTimerRef.current) {
-        clearTimeout(renderTimerRef.current);
-        renderTimerRef.current = null;
+    const handleZoomIdle = (event: Event) => {
+      const zoom = (event as CustomEvent<{ scale?: number }>).detail?.scale;
+      if (
+        !zoom ||
+        zoom <= lastRenderedZoomRef.current + RERENDER_ZOOM_THRESHOLD
+      ) {
+        return;
       }
+      renderAtScale(zoom);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [zoom]);
+
+    window.addEventListener(ZOOM_IDLE_EVENT, handleZoomIdle);
+    return () => window.removeEventListener(ZOOM_IDLE_EVENT, handleZoomIdle);
+  }, [renderAtScale]);
 
   return (
     <div
@@ -134,12 +147,14 @@ export function PdfTile({ page, zoom }: PdfTileProps) {
         ref={canvasRef}
         className={cn(
           "block transition-opacity duration-300",
-          isRendered ? "opacity-100" : "opacity-0"
+          isRendered ? "opacity-100" : "opacity-0",
         )}
       />
       <div className="absolute bottom-4 left-4 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
         <div className="bg-background/90 backdrop-blur-sm border border-border px-3 py-1.5 rounded-md text-xs font-mono font-medium text-foreground shadow-sm">
-          {page.pdfName} <span className="text-muted-foreground opacity-50 mx-1">/</span> {page.pageNumber}
+          {page.pdfName}{" "}
+          <span className="text-muted-foreground opacity-50 mx-1">/</span>{" "}
+          {page.pageNumber}
         </div>
       </div>
     </div>
