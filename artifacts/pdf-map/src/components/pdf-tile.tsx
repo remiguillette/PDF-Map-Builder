@@ -1,34 +1,34 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import { PdfPageInfo } from "@/hooks/use-pdf";
 import { cn } from "@/lib/utils";
 
 interface PdfTileProps {
   page: PdfPageInfo;
+  zoom: number;
 }
 
-export function PdfTile({ page }: PdfTileProps) {
+const BASE_SCALE = 1.5;
+
+export function PdfTile({ page, zoom }: PdfTileProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isRendered, setIsRendered] = useState(false);
-  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [displayDimensions, setDisplayDimensions] = useState({ width: 0, height: 0 });
+  const renderTaskRef = useRef<pdfjsLib.RenderTask | null>(null);
+  const renderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasInitialRender = useRef(false);
 
-  useEffect(() => {
-    let renderTask: pdfjsLib.RenderTask | null = null;
-    let isMounted = true;
-
-    const renderPage = async () => {
+  const renderAtScale = useCallback(
+    async (renderZoom: number) => {
       try {
         const pdfPage = await page.document.getPage(page.pageNumber);
-        if (!isMounted) return;
 
-        const displayScale = 1.5;
         const devicePixelRatio = window.devicePixelRatio || 1;
-        const displayViewport = pdfPage.getViewport({ scale: displayScale });
-        const renderViewport = pdfPage.getViewport({
-          scale: displayScale * devicePixelRatio,
-        });
+        const displayViewport = pdfPage.getViewport({ scale: BASE_SCALE });
+        const renderScale = BASE_SCALE * devicePixelRatio * renderZoom;
+        const renderViewport = pdfPage.getViewport({ scale: renderScale });
 
-        setDimensions({
+        setDisplayDimensions({
           width: displayViewport.width,
           height: displayViewport.height,
         });
@@ -39,44 +39,90 @@ export function PdfTile({ page }: PdfTileProps) {
         const context = canvas.getContext("2d");
         if (!context) return;
 
+        if (renderTaskRef.current) {
+          renderTaskRef.current.cancel();
+          renderTaskRef.current = null;
+        }
+
         canvas.width = Math.floor(renderViewport.width);
         canvas.height = Math.floor(renderViewport.height);
         canvas.style.width = `${displayViewport.width}px`;
         canvas.style.height = `${displayViewport.height}px`;
 
-        renderTask = pdfPage.render({
+        const task = pdfPage.render({
           canvasContext: context,
           viewport: renderViewport,
-          canvas: canvas,
         });
+        renderTaskRef.current = task;
 
-        await renderTask.promise;
-        if (isMounted) {
-          setIsRendered(true);
-        }
+        await task.promise;
+        renderTaskRef.current = null;
+        setIsRendered(true);
       } catch (err: any) {
         if (err.name !== "RenderingCancelledException") {
           console.error("Error rendering page:", err);
         }
       }
-    };
+    },
+    [page]
+  );
 
-    renderPage();
+  useEffect(() => {
+    hasInitialRender.current = false;
+    setIsRendered(false);
+
+    if (renderTaskRef.current) {
+      renderTaskRef.current.cancel();
+      renderTaskRef.current = null;
+    }
+    if (renderTimerRef.current) {
+      clearTimeout(renderTimerRef.current);
+      renderTimerRef.current = null;
+    }
+
+    renderAtScale(zoom);
+    hasInitialRender.current = true;
 
     return () => {
-      isMounted = false;
-      if (renderTask) {
-        renderTask.cancel();
+      if (renderTaskRef.current) {
+        renderTaskRef.current.cancel();
+        renderTaskRef.current = null;
+      }
+      if (renderTimerRef.current) {
+        clearTimeout(renderTimerRef.current);
+        renderTimerRef.current = null;
       }
     };
-  }, [page]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, renderAtScale]);
+
+  useEffect(() => {
+    if (!hasInitialRender.current) return;
+
+    if (renderTimerRef.current) {
+      clearTimeout(renderTimerRef.current);
+    }
+
+    renderTimerRef.current = setTimeout(() => {
+      renderTimerRef.current = null;
+      renderAtScale(zoom);
+    }, 200);
+
+    return () => {
+      if (renderTimerRef.current) {
+        clearTimeout(renderTimerRef.current);
+        renderTimerRef.current = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoom]);
 
   return (
     <div
       className="relative group bg-card border border-border shadow-sm transition-all hover:border-primary/50 hover:shadow-primary/10 overflow-hidden"
       style={{
-        width: dimensions.width || 600,
-        height: dimensions.height || 800,
+        width: displayDimensions.width || 600,
+        height: displayDimensions.height || 800,
       }}
     >
       {!isRendered && (

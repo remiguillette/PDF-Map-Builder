@@ -12,6 +12,7 @@ interface CanvasPageProps {
 export function CanvasPage({ page, position, onPositionChange }: CanvasPageProps) {
   const context = useTransformContext();
   const [isDragging, setIsDragging] = useState(false);
+  const [zoom, setZoom] = useState(() => context.state.scale);
   const startRef = useRef<{
     mouseX: number;
     mouseY: number;
@@ -20,6 +21,23 @@ export function CanvasPage({ page, position, onPositionChange }: CanvasPageProps
   } | null>(null);
 
   const pageId = `${page.pdfId}-${page.pageNumber}`;
+
+  useEffect(() => {
+    let animFrameId: number;
+    let lastScale = context.state.scale;
+
+    const checkScale = () => {
+      const currentScale = context.state.scale;
+      if (currentScale !== lastScale) {
+        lastScale = currentScale;
+        setZoom(currentScale);
+      }
+      animFrameId = requestAnimationFrame(checkScale);
+    };
+
+    animFrameId = requestAnimationFrame(checkScale);
+    return () => cancelAnimationFrame(animFrameId);
+  }, [context]);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -85,7 +103,7 @@ export function CanvasPage({ page, position, onPositionChange }: CanvasPageProps
           overflow: "hidden",
         }}
       >
-        <PdfTile page={page} />
+        <PdfTile page={page} zoom={zoom} />
       </div>
     </div>
   );
