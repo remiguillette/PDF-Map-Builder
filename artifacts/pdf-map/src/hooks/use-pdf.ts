@@ -41,6 +41,54 @@ type DestroyablePdfLoadingTask = pdfjsLib.PDFDocumentLoadingTask & {
 
 const PDF_RANGE_CHUNK_SIZE = 1024 * 1024;
 
+async function fetchPdfHeader(pdf: PreloadedPdf): Promise<Response> {
+  try {
+    const headResponse = await fetch(pdf.path, { method: "HEAD" });
+
+    if (headResponse.ok) {
+      return headResponse;
+    }
+  } catch {
+    // Some dev servers or hosts may not support HEAD requests. Fall back to a
+    // tiny ranged GET so PDF.js can keep its existing loading path after this
+    // preflight passes.
+  }
+
+  return fetch(pdf.path, {
+    headers: { Range: "bytes=0-4" },
+  });
+}
+
+async function validatePdfUrl(pdf: PreloadedPdf) {
+  const response = await fetchPdfHeader(pdf);
+
+  if (!response.ok) {
+    throw new Error(`PDF not found at ${pdf.path}`);
+  }
+
+  const contentType = response.headers
+    .get("Content-Type")
+    ?.split(";")[0]
+    .trim();
+
+  if (contentType && contentType !== "application/pdf") {
+    throw new Error(
+      `Expected a PDF but received ${contentType} from ${pdf.path}`,
+    );
+  }
+
+  if (response.body && response.type !== "opaqueredirect") {
+    const headerBytes = await response.clone().arrayBuffer();
+    const signature = new TextDecoder().decode(headerBytes.slice(0, 5));
+
+    if (signature && !signature.startsWith("%PDF-")) {
+      throw new Error(
+        `Expected a PDF but received ${contentType ?? "unknown content"} from ${pdf.path}`,
+      );
+    }
+  }
+}
+
 function destroyDocuments(documentsToDestroy: PdfDocumentInfo[]) {
   for (const { document } of documentsToDestroy) {
     void (document as DestroyablePdfDocument).destroy();
@@ -76,6 +124,8 @@ export function usePdfLoader() {
       const newDocs: PdfDocumentInfo[] = [];
       try {
         for (const pdf of pdfs) {
+          await validatePdfUrl(pdf);
+
           const loadingTask = pdfjsLib.getDocument({
             url: pdf.path,
             rangeChunkSize: PDF_RANGE_CHUNK_SIZE,
