@@ -11,6 +11,7 @@ import {
   FileText,
   LayoutGrid,
   Move,
+  Wand2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -24,6 +25,7 @@ interface PdfToolbarProps {
   onUploadClick: () => void;
   mode: ViewMode;
   setMode: (mode: ViewMode) => void;
+  onAutoArrange: () => void;
 }
 
 function ZoomControls() {
@@ -69,10 +71,10 @@ export function PdfToolbar({
   onUploadClick,
   mode,
   setMode,
+  onAutoArrange,
 }: PdfToolbarProps) {
   return (
     <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 flex items-center h-12 px-2 bg-card/80 backdrop-blur-md border border-border rounded-full shadow-lg shadow-black/20">
-
       {/* Zoom Controls */}
       <div className="flex items-center gap-1 px-2">
         <ZoomControls />
@@ -102,7 +104,7 @@ export function PdfToolbar({
         </Button>
       </div>
 
-      {/* Grid column controls — only in grid mode */}
+      {/* Grid-like arrangement controls — only in arranged mode */}
       {mode === "grid" && (
         <>
           <Separator orientation="vertical" className="h-6 opacity-50" />
@@ -142,6 +144,15 @@ export function PdfToolbar({
               title="4 columns"
             >
               <Columns4 className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onAutoArrange}
+              className="h-8 w-8"
+              title="Auto arrange with selected columns"
+            >
+              <Wand2 className="h-4 w-4" />
             </Button>
           </div>
         </>
