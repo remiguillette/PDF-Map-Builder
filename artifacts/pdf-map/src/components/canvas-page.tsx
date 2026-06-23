@@ -1,6 +1,7 @@
 import { memo, useRef, useState, useEffect, useCallback } from "react";
 import { PdfPageInfo } from "@/hooks/use-pdf";
 import { PdfTile } from "./pdf-tile";
+import type { RenderScheduleSnapshot } from "./pdf-render-scheduler";
 
 interface CanvasPageProps {
   page: PdfPageInfo;
@@ -8,6 +9,7 @@ interface CanvasPageProps {
   onPositionChange: (id: string, x: number, y: number) => void;
   onSizeChange?: (id: string, size: { width: number; height: number }) => void;
   getScale: () => number;
+  renderSchedule: RenderScheduleSnapshot;
 }
 
 function CanvasPageComponent({
@@ -16,6 +18,7 @@ function CanvasPageComponent({
   onPositionChange,
   onSizeChange,
   getScale,
+  renderSchedule,
 }: CanvasPageProps) {
   const [isDragging, setIsDragging] = useState(false);
   const startRef = useRef<{
@@ -93,8 +96,8 @@ function CanvasPageComponent({
       >
         <PdfTile
           page={page}
-          getScale={getScale}
           onDimensionsChange={(size) => onSizeChange?.(pageId, size)}
+          renderSchedule={renderSchedule}
         />
       </div>
     </div>
@@ -108,6 +111,7 @@ export const CanvasPage = memo(CanvasPageComponent, (prev, next) => {
     prev.position.y === next.position.y &&
     prev.onPositionChange === next.onPositionChange &&
     prev.onSizeChange === next.onSizeChange &&
-    prev.getScale === next.getScale
+    prev.getScale === next.getScale &&
+    prev.renderSchedule === next.renderSchedule
   );
 });

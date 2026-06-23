@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import { PdfPageInfo } from "@/hooks/use-pdf";
 import { cn } from "@/lib/utils";
+import type { RenderScheduleSnapshot } from "./pdf-render-scheduler";
 
 interface PdfTileProps {
   page: PdfPageInfo;
-  getScale?: () => number;
   onDimensionsChange?: (size: { width: number; height: number }) => void;
+  renderSchedule: RenderScheduleSnapshot;
 }
 
 type TileKeyParts = {
@@ -34,13 +35,9 @@ type TileInfo = {
 };
 
 const BASE_SCALE = 1.5;
-const INITIAL_RENDER_ZOOM = 1;
-const MAX_RENDER_ZOOM = 10;
 const MAX_TILE_PIXELS = 4_000_000;
 const TILE_SIZE = 512;
 const PREVIEW_SCALE = 0.25;
-const RERENDER_ZOOM_THRESHOLD = 0.25;
-const ZOOM_IDLE_EVENT = "pdf-map:zoom-idle";
 const MAX_TILE_CACHE_BYTES = 192 * 1024 * 1024;
 const MAX_TILE_CACHE_ENTRIES = 256;
 
@@ -70,6 +67,17 @@ class TileBitmapCache {
     this.evictIfNeeded();
   }
 
+  evictOversized(maxScaleBucket: number) {
+    for (const [key, entry] of this.entries) {
+      const scaleBucket = Number(key.split(":")[4]);
+      if (Number.isFinite(scaleBucket) && scaleBucket > maxScaleBucket) {
+        entry.bitmap.close();
+        this.bytes -= entry.bytes;
+        this.entries.delete(key);
+      }
+    }
+  }
+
   private evictIfNeeded() {
     while (
       this.bytes > MAX_TILE_CACHE_BYTES ||
@@ -90,14 +98,6 @@ class TileBitmapCache {
 
 const tileCache = new TileBitmapCache();
 
-function getDevicePixelRatio() {
-  return Math.max(1, Math.min(window.devicePixelRatio || 1, 4));
-}
-
-function getScaleBucket(zoom: number) {
-  return Math.max(1, Math.min(MAX_RENDER_ZOOM, Math.ceil(zoom * 4) / 4));
-}
-
 function getTileKey(parts: TileKeyParts) {
   return [
     parts.documentId,
@@ -110,9 +110,14 @@ function getTileKey(parts: TileKeyParts) {
   ].join(":");
 }
 
-function getTileRenderMetrics(tile: TileInfo, scaleBucket: number) {
-  const requestedPixelRatio = getDevicePixelRatio() * scaleBucket;
-  const requestedPixels = tile.width * requestedPixelRatio * tile.height * requestedPixelRatio;
+function getTileRenderMetrics(
+  tile: TileInfo,
+  scaleBucket: number,
+  devicePixelRatio: number,
+) {
+  const requestedPixelRatio = devicePixelRatio * scaleBucket;
+  const requestedPixels =
+    tile.width * requestedPixelRatio * tile.height * requestedPixelRatio;
   const boundedPixelRatio =
     requestedPixels <= MAX_TILE_PIXELS
       ? requestedPixelRatio
@@ -120,11 +125,15 @@ function getTileRenderMetrics(tile: TileInfo, scaleBucket: number) {
 
   return {
     outputScale: Math.max(1, boundedPixelRatio),
-    devicePixelRatio: getDevicePixelRatio(),
+    devicePixelRatio,
   };
 }
 
-function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap, tile: TileInfo) {
+function drawBitmapToCanvas(
+  canvas: HTMLCanvasElement,
+  bitmap: ImageBitmap,
+  tile: TileInfo,
+) {
   const context = canvas.getContext("2d");
   if (!context) return;
 
@@ -136,17 +145,32 @@ function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap, tile
   context.drawImage(bitmap, 0, 0);
 }
 
-function PdfPageTile({ page, tile, scaleBucket, rotation, isPreviewReady }: {
+function PdfPageTile({
+  page,
+  tile,
+  scaleBucket,
+  rotation,
+  isPreviewReady,
+  renderGeneration,
+  devicePixelRatio,
+}: {
   page: PdfPageInfo;
   tile: TileInfo;
   scaleBucket: number;
   rotation: number;
   isPreviewReady: boolean;
+  renderGeneration: number;
+  devicePixelRatio: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderTaskRef = useRef<pdfjsLib.RenderTask | null>(null);
+  const latestGenerationRef = useRef(renderGeneration);
   const [isRendered, setIsRendered] = useState(false);
   const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    latestGenerationRef.current = renderGeneration;
+  }, [renderGeneration]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -164,7 +188,8 @@ function PdfPageTile({ page, tile, scaleBucket, rotation, isPreviewReady }: {
     if (!isVisible) return;
 
     let isCancelled = false;
-    const metrics = getTileRenderMetrics(tile, scaleBucket);
+    const generation = renderGeneration;
+    const metrics = getTileRenderMetrics(tile, scaleBucket, devicePixelRatio);
     const key = getTileKey({
       documentId: page.pdfId,
       pageNumber: page.pageNumber,
@@ -187,7 +212,7 @@ function PdfPageTile({ page, tile, scaleBucket, rotation, isPreviewReady }: {
     void (async () => {
       try {
         const pdfPage = await page.document.getPage(page.pageNumber);
-        if (isCancelled) return;
+        if (isCancelled || generation !== latestGenerationRef.current) return;
 
         const renderScale = BASE_SCALE * metrics.outputScale;
         const viewport = pdfPage.getViewport({ scale: renderScale, rotation });
@@ -198,15 +223,22 @@ function PdfPageTile({ page, tile, scaleBucket, rotation, isPreviewReady }: {
         canvas.width = Math.ceil(tile.width * metrics.outputScale);
         canvas.height = Math.ceil(tile.height * metrics.outputScale);
         context.save();
-        context.translate(-tile.left * metrics.outputScale, -tile.top * metrics.outputScale);
+        context.translate(
+          -tile.left * metrics.outputScale,
+          -tile.top * metrics.outputScale,
+        );
 
-        const task = pdfPage.render({ canvas, canvasContext: context, viewport });
+        const task = pdfPage.render({
+          canvas,
+          canvasContext: context,
+          viewport,
+        });
         renderTaskRef.current = task;
         await task.promise;
         context.restore();
         renderTaskRef.current = null;
 
-        if (isCancelled) return;
+        if (isCancelled || generation !== latestGenerationRef.current) return;
 
         const bitmap = await createImageBitmap(canvas);
         const bytes = bitmap.width * bitmap.height * 4;
@@ -230,26 +262,50 @@ function PdfPageTile({ page, tile, scaleBucket, rotation, isPreviewReady }: {
         renderTaskRef.current = null;
       }
     };
-  }, [isVisible, page, rotation, scaleBucket, tile]);
+  }, [
+    devicePixelRatio,
+    isVisible,
+    page,
+    renderGeneration,
+    rotation,
+    scaleBucket,
+    tile,
+  ]);
 
   return (
     <canvas
       ref={canvasRef}
       className={cn(
         "absolute transition-opacity duration-200",
-        isRendered ? "opacity-100" : isPreviewReady ? "opacity-0" : "opacity-30",
+        isRendered
+          ? "opacity-100"
+          : isPreviewReady
+            ? "opacity-0"
+            : "opacity-30",
       )}
-      style={{ left: tile.left, top: tile.top, width: tile.width, height: tile.height }}
+      style={{
+        left: tile.left,
+        top: tile.top,
+        width: tile.width,
+        height: tile.height,
+      }}
     />
   );
 }
 
-export function PdfTile({ page, getScale, onDimensionsChange }: PdfTileProps) {
+export function PdfTile({
+  page,
+  onDimensionsChange,
+  renderSchedule,
+}: PdfTileProps) {
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const previewRenderTaskRef = useRef<pdfjsLib.RenderTask | null>(null);
+  const previewGenerationRef = useRef(0);
   const [isPreviewReady, setIsPreviewReady] = useState(false);
-  const [scaleBucket, setScaleBucket] = useState(() => getScaleBucket(getScale ? getScale() : INITIAL_RENDER_ZOOM));
-  const [displayDimensions, setDisplayDimensions] = useState({ width: 0, height: 0 });
+  const [displayDimensions, setDisplayDimensions] = useState({
+    width: 0,
+    height: 0,
+  });
   const [rotation, setRotation] = useState(0);
 
   const tiles = useMemo(() => {
@@ -272,11 +328,19 @@ export function PdfTile({ page, getScale, onDimensionsChange }: PdfTileProps) {
   }, [displayDimensions.height, displayDimensions.width]);
 
   const renderPreview = useCallback(async () => {
+    const previewGeneration = previewGenerationRef.current + 1;
+    previewGenerationRef.current = previewGeneration;
+
     try {
       const pdfPage = await page.document.getPage(page.pageNumber);
+      if (previewGeneration !== previewGenerationRef.current) return;
+
       const displayViewport = pdfPage.getViewport({ scale: BASE_SCALE });
       setRotation(displayViewport.rotation);
-      const nextDisplayDimensions = { width: displayViewport.width, height: displayViewport.height };
+      const nextDisplayDimensions = {
+        width: displayViewport.width,
+        height: displayViewport.height,
+      };
       setDisplayDimensions(nextDisplayDimensions);
       onDimensionsChange?.(nextDisplayDimensions);
 
@@ -284,19 +348,27 @@ export function PdfTile({ page, getScale, onDimensionsChange }: PdfTileProps) {
       const context = canvas?.getContext("2d");
       if (!canvas || !context) return;
 
-      const previewViewport = pdfPage.getViewport({ scale: BASE_SCALE * PREVIEW_SCALE });
+      const previewViewport = pdfPage.getViewport({
+        scale: BASE_SCALE * PREVIEW_SCALE,
+      });
       canvas.width = Math.floor(previewViewport.width);
       canvas.height = Math.floor(previewViewport.height);
       canvas.style.width = `${displayViewport.width}px`;
       canvas.style.height = `${displayViewport.height}px`;
 
-      const task = pdfPage.render({ canvas, canvasContext: context, viewport: previewViewport });
+      const task = pdfPage.render({
+        canvas,
+        canvasContext: context,
+        viewport: previewViewport,
+      });
       previewRenderTaskRef.current = task;
       await task.promise;
       previewRenderTaskRef.current = null;
+      if (previewGeneration !== previewGenerationRef.current) return;
       setIsPreviewReady(true);
     } catch (err: any) {
-      if (err.name !== "RenderingCancelledException") console.error("Error rendering page preview:", err);
+      if (err.name !== "RenderingCancelledException")
+        console.error("Error rendering page preview:", err);
     }
   }, [page, onDimensionsChange]);
 
@@ -304,29 +376,25 @@ export function PdfTile({ page, getScale, onDimensionsChange }: PdfTileProps) {
     setIsPreviewReady(false);
     void renderPreview();
     return () => {
+      previewGenerationRef.current += 1;
       previewRenderTaskRef.current?.cancel();
       previewRenderTaskRef.current = null;
     };
   }, [renderPreview]);
 
-  useEffect(() => {
-    const handleZoomIdle = (event: Event) => {
-      const zoom = (event as CustomEvent<{ scale?: number }>).detail?.scale;
-      if (!zoom) return;
-      const nextBucket = getScaleBucket(zoom);
-      setScaleBucket((current) =>
-        nextBucket > current + RERENDER_ZOOM_THRESHOLD ? nextBucket : current,
-      );
-    };
+  const scaleBucket = renderSchedule.zoomBucket;
 
-    window.addEventListener(ZOOM_IDLE_EVENT, handleZoomIdle);
-    return () => window.removeEventListener(ZOOM_IDLE_EVENT, handleZoomIdle);
-  }, []);
+  useEffect(() => {
+    tileCache.evictOversized(scaleBucket + 1);
+  }, [scaleBucket]);
 
   return (
     <div
       className="relative group bg-card border border-border shadow-sm transition-all hover:border-primary/50 hover:shadow-primary/10 overflow-hidden"
-      style={{ width: displayDimensions.width || 600, height: displayDimensions.height || 800 }}
+      style={{
+        width: displayDimensions.width || 600,
+        height: displayDimensions.height || 800,
+      }}
     >
       {!isPreviewReady && (
         <div className="absolute inset-0 flex items-center justify-center bg-card">
@@ -335,7 +403,10 @@ export function PdfTile({ page, getScale, onDimensionsChange }: PdfTileProps) {
       )}
       <canvas
         ref={previewCanvasRef}
-        className={cn("absolute inset-0 block transition-opacity duration-300", isPreviewReady ? "opacity-100" : "opacity-0")}
+        className={cn(
+          "absolute inset-0 block transition-opacity duration-300",
+          isPreviewReady ? "opacity-100" : "opacity-0",
+        )}
       />
       {tiles.map((tile) => (
         <PdfPageTile
@@ -345,11 +416,15 @@ export function PdfTile({ page, getScale, onDimensionsChange }: PdfTileProps) {
           scaleBucket={scaleBucket}
           rotation={rotation}
           isPreviewReady={isPreviewReady}
+          renderGeneration={renderSchedule.generation}
+          devicePixelRatio={renderSchedule.devicePixelRatio}
         />
       ))}
       <div className="absolute bottom-4 left-4 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
         <div className="bg-background/90 backdrop-blur-sm border border-border px-3 py-1.5 rounded-md text-xs font-mono font-medium text-foreground shadow-sm">
-          {page.pdfName} <span className="text-muted-foreground opacity-50 mx-1">/</span> {page.pageNumber}
+          {page.pdfName}{" "}
+          <span className="text-muted-foreground opacity-50 mx-1">/</span>{" "}
+          {page.pageNumber}
         </div>
       </div>
     </div>
