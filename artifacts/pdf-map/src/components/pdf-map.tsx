@@ -7,9 +7,10 @@ import { GridBackground } from "./grid-background";
 import { useCanvasPositions } from "@/hooks/use-canvas-positions";
 import {
   DEFAULT_PAGE_BOUNDS,
+  createPageSpatialIndex,
   getVisibleCanvasRect,
-  intersectsCanvasRect,
   type CanvasTransform,
+  type PageLayout,
   type ViewportSize,
 } from "./viewport-virtualization";
 
@@ -155,31 +156,48 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
     [viewportSize, transform],
   );
 
-  const visiblePageIds = useMemo(() => {
-    const ids = new Set<string>();
+  const pageLayouts = useMemo<PageLayout[]>(
+    () =>
+      pages.map((page) => {
+        const id = `${page.pdfId}-${page.pageNumber}`;
+        const position = positions[id] ?? DEFAULT_PAGE_POSITION;
+        const size = pageSizes[id] ?? DEFAULT_PAGE_BOUNDS;
 
-    for (const page of pages) {
-      const id = `${page.pdfId}-${page.pageNumber}`;
-      const position = positions[id] ?? DEFAULT_PAGE_POSITION;
-      const size = pageSizes[id] ?? DEFAULT_PAGE_BOUNDS;
+        return {
+          id,
+          x: position.x,
+          y: position.y,
+          width: size.width,
+          height: size.height,
+        };
+      }),
+    [pages, pageSizes, positions],
+  );
 
-      if (
-        intersectsCanvasRect(
-          {
-            x: position.x,
-            y: position.y,
-            width: size.width,
-            height: size.height,
-          },
-          visibleRect,
-        )
-      ) {
-        ids.add(id);
-      }
-    }
+  const pagesById = useMemo(
+    () =>
+      new Map<string, PdfPageInfo>(
+        pages.map(
+          (page) => [`${page.pdfId}-${page.pageNumber}`, page] as const,
+        ),
+      ),
+    [pages],
+  );
 
-    return ids;
-  }, [pages, pageSizes, positions, visibleRect]);
+  const pageLayoutById = useMemo(
+    () => new Map(pageLayouts.map((layout) => [layout.id, layout] as const)),
+    [pageLayouts],
+  );
+
+  const pageSpatialIndex = useMemo(
+    () => createPageSpatialIndex(pageLayouts),
+    [pageLayouts],
+  );
+
+  const visiblePageIds = useMemo(
+    () => pageSpatialIndex.query(visibleRect),
+    [pageSpatialIndex, visibleRect],
+  );
 
   return (
     <div
@@ -209,17 +227,17 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
               height: CANVAS_HEIGHT,
             }}
           >
-            {pages.map((page) => {
-              const id = `${page.pdfId}-${page.pageNumber}`;
-              const size = pageSizes[id] ?? DEFAULT_PAGE_BOUNDS;
+            {visiblePageIds.map((id) => {
+              const page = pagesById.get(id);
+              const layout = pageLayoutById.get(id);
+              if (!page || !layout) return null;
+
               return (
                 <CanvasPage
                   key={id}
                   page={page}
-                  position={positions[id] ?? DEFAULT_PAGE_POSITION}
+                  position={{ x: layout.x, y: layout.y }}
                   onPositionChange={updatePosition}
-                  shouldRenderTile={visiblePageIds.has(id)}
-                  placeholderSize={size}
                   onSizeChange={handlePageSizeChange}
                   getScale={getScale}
                 />
