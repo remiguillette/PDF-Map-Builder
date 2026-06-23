@@ -7,12 +7,18 @@ interface CanvasPageProps {
   page: PdfPageInfo;
   position: { x: number; y: number };
   onPositionChange: (id: string, x: number, y: number) => void;
+  shouldRenderTile?: boolean;
+  placeholderSize: { width: number; height: number };
+  onSizeChange?: (id: string, size: { width: number; height: number }) => void;
 }
 
 export function CanvasPage({
   page,
   position,
   onPositionChange,
+  shouldRenderTile = true,
+  placeholderSize,
+  onSizeChange,
 }: CanvasPageProps) {
   const context = useTransformContext();
   const [isDragging, setIsDragging] = useState(false);
@@ -89,7 +95,25 @@ export function CanvasPage({
           overflow: "hidden",
         }}
       >
-        <PdfTile page={page} />
+        {shouldRenderTile ? (
+          <PdfTile
+            page={page}
+            onDimensionsChange={(size) => onSizeChange?.(pageId, size)}
+          />
+        ) : (
+          <div
+            className="relative bg-card/70 border border-dashed border-border shadow-sm overflow-hidden"
+            style={{
+              width: placeholderSize.width,
+              height: placeholderSize.height,
+            }}
+            aria-label={`${page.pdfName} page ${page.pageNumber} placeholder`}
+          >
+            <div className="absolute inset-0 flex items-center justify-center text-xs font-mono text-muted-foreground/70">
+              {page.pdfName} / {page.pageNumber}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

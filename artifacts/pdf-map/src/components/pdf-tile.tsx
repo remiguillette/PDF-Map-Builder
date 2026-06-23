@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 
 interface PdfTileProps {
   page: PdfPageInfo;
+  onDimensionsChange?: (size: { width: number; height: number }) => void;
 }
 
 const BASE_SCALE = 1.5;
@@ -38,7 +39,7 @@ function getBoundedRenderScale(
   );
 }
 
-export function PdfTile({ page }: PdfTileProps) {
+export function PdfTile({ page, onDimensionsChange }: PdfTileProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isRendered, setIsRendered] = useState(false);
   const [displayDimensions, setDisplayDimensions] = useState({
@@ -60,10 +61,13 @@ export function PdfTile({ page }: PdfTileProps) {
         );
         const renderViewport = pdfPage.getViewport({ scale: renderScale });
 
-        setDisplayDimensions({
+        const nextDisplayDimensions = {
           width: displayViewport.width,
           height: displayViewport.height,
-        });
+        };
+
+        setDisplayDimensions(nextDisplayDimensions);
+        onDimensionsChange?.(nextDisplayDimensions);
 
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -98,7 +102,7 @@ export function PdfTile({ page }: PdfTileProps) {
         }
       }
     },
-    [page],
+    [page, onDimensionsChange],
   );
 
   useEffect(() => {
