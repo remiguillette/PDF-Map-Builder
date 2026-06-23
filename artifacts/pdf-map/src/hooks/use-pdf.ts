@@ -20,6 +20,16 @@ export type PdfPageInfo = {
   document: pdfjsLib.PDFDocumentProxy;
 };
 
+async function createStablePdfId(file: File, arrayBuffer: ArrayBuffer) {
+  const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const contentHash = hashArray
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+
+  return `${file.name}-${file.size}-${file.lastModified}-${contentHash}`;
+}
+
 export function usePdfLoader() {
   const [documents, setDocuments] = useState<PdfDocumentInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -33,9 +43,10 @@ export function usePdfLoader() {
       for (const file of files) {
         if (file.type !== "application/pdf") continue;
         const arrayBuffer = await file.arrayBuffer();
+        const id = await createStablePdfId(file, arrayBuffer);
         const document = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         newDocs.push({
-          id: Math.random().toString(36).substring(7),
+          id,
           name: file.name,
           document,
           numPages: document.numPages,
