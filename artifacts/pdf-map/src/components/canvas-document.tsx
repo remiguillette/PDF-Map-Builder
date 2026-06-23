@@ -1,9 +1,10 @@
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useMemo, useRef, useState, useEffect, useCallback } from "react";
 import { useTransformContext } from "react-zoom-pan-pinch";
 import { PdfPageInfo, PdfDocumentInfo } from "@/hooks/use-pdf";
 import { PdfTile } from "./pdf-tile";
 import { GripVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { PdfRenderScheduler } from "./pdf-render-scheduler";
 
 interface CanvasDocumentProps {
   doc: PdfDocumentInfo;
@@ -21,6 +22,7 @@ export function CanvasDocument({
   isEditMode,
 }: CanvasDocumentProps) {
   const context = useTransformContext();
+  const renderSchedulerRef = useRef(new PdfRenderScheduler());
   const [isDragging, setIsDragging] = useState(false);
   const startRef = useRef<{
     mouseX: number;
@@ -42,7 +44,7 @@ export function CanvasDocument({
         posY: position.y,
       };
     },
-    [isEditMode, position.x, position.y]
+    [isEditMode, position.x, position.y],
   );
 
   useEffect(() => {
@@ -56,7 +58,7 @@ export function CanvasDocument({
       onPositionChange(
         doc.id,
         startRef.current.posX + dx,
-        startRef.current.posY + dy
+        startRef.current.posY + dy,
       );
     };
 
@@ -72,6 +74,28 @@ export function CanvasDocument({
       window.removeEventListener("mouseup", onMouseUp);
     };
   }, [isDragging, context, doc.id, onPositionChange]);
+
+  const renderSchedule = useMemo(() => {
+    return renderSchedulerRef.current.schedule({
+      viewport: {
+        left: 0,
+        top: 0,
+        right: window.innerWidth,
+        bottom: window.innerHeight,
+      },
+      zoom: context.state.scale,
+      devicePixelRatio: Math.max(1, Math.min(window.devicePixelRatio || 1, 4)),
+      pages: pages.map((page, index) => ({
+        id: `${page.pdfId}-${page.pageNumber}`,
+        documentId: page.pdfId,
+        pageNumber: page.pageNumber,
+        x: position.x,
+        y: position.y + index,
+        width: 0,
+        height: 0,
+      })),
+    });
+  }, [context.state.scale, pages, position.x, position.y]);
 
   return (
     <div
@@ -89,10 +113,11 @@ export function CanvasDocument({
         className={cn(
           "bg-card border border-border rounded-xl shadow-md overflow-hidden transition-shadow",
           isDragging && "shadow-2xl ring-2 ring-primary/40",
-          isEditMode && !isDragging && "hover:border-primary/40 hover:shadow-lg"
+          isEditMode &&
+            !isDragging &&
+            "hover:border-primary/40 hover:shadow-lg",
         )}
       >
-        {/* Document header */}
         <div className="flex items-center gap-2 px-3 py-2 bg-muted/60 border-b border-border">
           {isEditMode && (
             <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -105,12 +130,12 @@ export function CanvasDocument({
           </span>
         </div>
 
-        {/* Pages */}
         <div className="flex flex-col gap-3 p-3">
           {pages.map((page) => (
             <PdfTile
               key={`${page.pdfId}-${page.pageNumber}`}
               page={page}
+              renderSchedule={renderSchedule}
             />
           ))}
         </div>

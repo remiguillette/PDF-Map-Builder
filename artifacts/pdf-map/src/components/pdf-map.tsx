@@ -13,6 +13,7 @@ import {
   type PageLayout,
   type ViewportSize,
 } from "./viewport-virtualization";
+import { PdfRenderScheduler } from "./pdf-render-scheduler";
 
 interface PdfMapProps {
   pages: PdfPageInfo[];
@@ -25,8 +26,6 @@ const CANVAS_HEIGHT = 6000;
 const PAGE_START_X = 80;
 const PAGE_START_Y = 80;
 const DEFAULT_PAGE_POSITION = { x: PAGE_START_X, y: PAGE_START_Y };
-const ZOOM_IDLE_EVENT = "pdf-map:zoom-idle";
-const ZOOM_IDLE_DELAY_MS = 250;
 
 const INITIAL_TRANSFORM: CanvasTransform = {
   scale: 0.35,
@@ -34,15 +33,18 @@ const INITIAL_TRANSFORM: CanvasTransform = {
   positionY: 0,
 };
 
-export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
+export function PdfMap({
+  pages,
+  documents: _documents,
+  fileCount,
+}: PdfMapProps) {
   const pageIds = useMemo(
     () => pages.map((p) => `${p.pdfId}-${p.pageNumber}`),
     [pages],
   );
   const { positions, updatePosition } = useCanvasPositions(pageIds);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const zoomIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const zoomIdleCallbackRef = useRef<number | null>(null);
+  const renderSchedulerRef = useRef(new PdfRenderScheduler());
   const transformRef = useRef<CanvasTransform>(INITIAL_TRANSFORM);
   const [transform, setTransform] =
     useState<CanvasTransform>(INITIAL_TRANSFORM);
@@ -55,37 +57,6 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
   >({});
 
   const getScale = useCallback(() => transformRef.current.scale, []);
-
-  const scheduleZoomIdle = useCallback((scale: number) => {
-    if (zoomIdleTimerRef.current) {
-      clearTimeout(zoomIdleTimerRef.current);
-    }
-    if (zoomIdleCallbackRef.current !== null) {
-      window.cancelIdleCallback?.(zoomIdleCallbackRef.current);
-      zoomIdleCallbackRef.current = null;
-    }
-
-    zoomIdleTimerRef.current = setTimeout(() => {
-      const dispatchZoomIdle = () => {
-        window.dispatchEvent(
-          new CustomEvent(ZOOM_IDLE_EVENT, { detail: { scale } }),
-        );
-        zoomIdleTimerRef.current = null;
-        zoomIdleCallbackRef.current = null;
-      };
-
-      if ("requestIdleCallback" in window) {
-        zoomIdleCallbackRef.current = window.requestIdleCallback(
-          dispatchZoomIdle,
-          {
-            timeout: ZOOM_IDLE_DELAY_MS,
-          },
-        );
-      } else {
-        dispatchZoomIdle();
-      }
-    }, ZOOM_IDLE_DELAY_MS);
-  }, []);
 
   const updateTransform = useCallback(
     (state: { scale: number; positionX: number; positionY: number }) => {
@@ -140,17 +111,6 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
     return () => resizeObserver.disconnect();
   }, []);
 
-  useEffect(() => {
-    return () => {
-      if (zoomIdleTimerRef.current) {
-        clearTimeout(zoomIdleTimerRef.current);
-      }
-      if (zoomIdleCallbackRef.current !== null) {
-        window.cancelIdleCallback?.(zoomIdleCallbackRef.current);
-      }
-    };
-  }, []);
-
   const visibleRect = useMemo(
     () => getVisibleCanvasRect(viewportSize, transform),
     [viewportSize, transform],
@@ -199,6 +159,29 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
     [pageSpatialIndex, visibleRect],
   );
 
+  const renderSchedule = useMemo(() => {
+    const visiblePages = visiblePageIds
+      .map((id) => {
+        const page = pagesById.get(id);
+        const layout = pageLayoutById.get(id);
+        if (!page || !layout) return null;
+
+        return {
+          ...layout,
+          documentId: page.pdfId,
+          pageNumber: page.pageNumber,
+        };
+      })
+      .filter((page): page is NonNullable<typeof page> => page !== null);
+
+    return renderSchedulerRef.current.schedule({
+      viewport: visibleRect,
+      zoom: transform.scale,
+      devicePixelRatio: Math.max(1, Math.min(window.devicePixelRatio || 1, 4)),
+      pages: visiblePages,
+    });
+  }, [pageLayoutById, pagesById, transform.scale, visiblePageIds, visibleRect]);
+
   return (
     <div
       ref={wrapperRef}
@@ -215,7 +198,6 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
         doubleClick={{ disabled: true }}
         onInit={(ref) => updateTransform(ref.state)}
         onTransform={(ref) => updateTransform(ref.state)}
-        onZoom={(ref) => scheduleZoomIdle(ref.state.scale)}
       >
         <GridBackground show={true} />
 
@@ -240,6 +222,7 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
                   onPositionChange={updatePosition}
                   onSizeChange={handlePageSizeChange}
                   getScale={getScale}
+                  renderSchedule={renderSchedule}
                 />
               );
             })}
