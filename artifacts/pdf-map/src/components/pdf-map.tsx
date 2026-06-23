@@ -39,7 +39,6 @@ export function PdfMap({
   return (
     <div className="h-screen w-full bg-background overflow-hidden select-none relative">
       <TransformWrapper
-        key={mode}
         initialScale={mode === "canvas" ? 0.35 : 0.5}
         minScale={0.05}
         maxScale={4}
