@@ -21,8 +21,17 @@ export function PdfTile({ page }: PdfTileProps) {
         const pdfPage = await page.document.getPage(page.pageNumber);
         if (!isMounted) return;
 
-        const viewport = pdfPage.getViewport({ scale: 1.5 });
-        setDimensions({ width: viewport.width, height: viewport.height });
+        const displayScale = 1.5;
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        const displayViewport = pdfPage.getViewport({ scale: displayScale });
+        const renderViewport = pdfPage.getViewport({
+          scale: displayScale * devicePixelRatio,
+        });
+
+        setDimensions({
+          width: displayViewport.width,
+          height: displayViewport.height,
+        });
 
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -30,12 +39,14 @@ export function PdfTile({ page }: PdfTileProps) {
         const context = canvas.getContext("2d");
         if (!context) return;
 
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
+        canvas.width = Math.floor(renderViewport.width);
+        canvas.height = Math.floor(renderViewport.height);
+        canvas.style.width = `${displayViewport.width}px`;
+        canvas.style.height = `${displayViewport.height}px`;
 
         renderTask = pdfPage.render({
           canvasContext: context,
-          viewport,
+          viewport: renderViewport,
           canvas: canvas,
         });
 
