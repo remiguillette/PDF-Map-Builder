@@ -1,11 +1,12 @@
 import { useState, useRef } from "react";
 import { usePdfLoader } from "@/hooks/use-pdf";
 import { PdfUploader } from "@/components/pdf-uploader";
-import { PdfMap } from "@/components/pdf-map";
+import { PdfMap, ViewMode } from "@/components/pdf-map";
 
 export default function Home() {
   const { allPages, documents, loadPdfs, isLoading } = usePdfLoader();
   const [columns, setColumns] = useState(2);
+  const [mode, setMode] = useState<ViewMode>("grid");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleUploadClick = () => {
@@ -27,15 +28,17 @@ export default function Home() {
 
   return (
     <div className="relative h-screen w-full bg-background">
-      <PdfMap 
-        pages={allPages} 
-        columns={columns} 
+      <PdfMap
+        pages={allPages}
+        documents={documents}
+        columns={columns}
         setColumns={setColumns}
         fileCount={documents.length}
         onUploadClick={handleUploadClick}
+        mode={mode}
+        setMode={setMode}
       />
-      
-      {/* Hidden input for the "Add PDF" button in the toolbar */}
+
       <input
         ref={fileInputRef}
         type="file"
