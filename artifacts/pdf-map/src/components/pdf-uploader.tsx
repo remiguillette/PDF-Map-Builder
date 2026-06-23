@@ -9,6 +9,42 @@ interface PdfUploaderProps {
 
 export function PdfUploader({ onUpload, isLoading }: PdfUploaderProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const handleFiles = useCallback(
+    (selectedFiles: File[]) => {
+      if (selectedFiles.length === 0) {
+        setMessage("Select at least one PDF file to upload.");
+        return;
+      }
+
+      const acceptedFiles = selectedFiles.filter(
+        (file) =>
+          file.type === "application/pdf" ||
+          file.name.toLowerCase().endsWith(".pdf"),
+      );
+      const rejectedCount = selectedFiles.length - acceptedFiles.length;
+
+      if (acceptedFiles.length === 0) {
+        setMessage(
+          rejectedCount === 1
+            ? "That file is not a PDF. Please choose a PDF file."
+            : "None of those files are PDFs. Please choose PDF files.",
+        );
+        return;
+      }
+
+      setMessage(
+        rejectedCount > 0
+          ? `${rejectedCount} non-PDF ${
+              rejectedCount === 1 ? "file was" : "files were"
+            } skipped.`
+          : null,
+      );
+      onUpload(acceptedFiles);
+    },
+    [onUpload],
+  );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -24,26 +60,17 @@ export function PdfUploader({ onUpload, isLoading }: PdfUploaderProps) {
     (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragging(false);
-      const files = Array.from(e.dataTransfer.files).filter(
-        (f) => f.type === "application/pdf"
-      );
-      if (files.length > 0) {
-        onUpload(files);
-      }
+      handleFiles(Array.from(e.dataTransfer.files));
     },
-    [onUpload]
+    [handleFiles],
   );
 
   const handleFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (e.target.files?.length) {
-        const files = Array.from(e.target.files).filter(
-          (f) => f.type === "application/pdf"
-        );
-        onUpload(files);
-      }
+      handleFiles(Array.from(e.target.files ?? []));
+      e.target.value = "";
     },
-    [onUpload]
+    [handleFiles],
   );
 
   return (
@@ -56,7 +83,7 @@ export function PdfUploader({ onUpload, isLoading }: PdfUploaderProps) {
           "group relative flex h-[400px] w-full max-w-2xl cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all",
           isDragging
             ? "border-primary bg-primary/5"
-            : "border-border bg-card hover:border-primary/50 hover:bg-card/80"
+            : "border-border bg-card hover:border-primary/50 hover:bg-card/80",
         )}
       >
         <input
@@ -82,6 +109,9 @@ export function PdfUploader({ onUpload, isLoading }: PdfUploaderProps) {
             <p className="text-sm text-muted-foreground">
               Drag and drop your PDF files here, or click to browse
             </p>
+            {message && (
+              <p className="text-sm font-medium text-destructive">{message}</p>
+            )}
           </div>
           <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground bg-background/50 px-3 py-1.5 rounded-md">
             <FileType className="h-4 w-4" />
