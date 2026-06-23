@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import * as pdfjsLib from "pdfjs-dist";
+import type { PreloadedPdf } from "@/pdf-registry";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.mjs",
@@ -20,39 +21,29 @@ export type PdfPageInfo = {
   document: pdfjsLib.PDFDocumentProxy;
 };
 
-async function createStablePdfId(file: File, arrayBuffer: ArrayBuffer) {
-  const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const contentHash = hashArray
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-
-  return `${file.name}-${file.size}-${file.lastModified}-${contentHash}`;
-}
-
 export function usePdfLoader() {
   const [documents, setDocuments] = useState<PdfDocumentInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadPdfs = useCallback(async (files: File[]) => {
+  const loadFromUrls = useCallback(async (pdfs: PreloadedPdf[]) => {
     setIsLoading(true);
     setError(null);
     try {
       const newDocs: PdfDocumentInfo[] = [];
-      for (const file of files) {
-        if (file.type !== "application/pdf") continue;
-        const arrayBuffer = await file.arrayBuffer();
-        const id = await createStablePdfId(file, arrayBuffer);
+      for (const pdf of pdfs) {
+        const response = await fetch(pdf.path);
+        if (!response.ok) throw new Error(`Failed to fetch ${pdf.name}: ${response.status}`);
+        const arrayBuffer = await response.arrayBuffer();
         const document = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         newDocs.push({
-          id,
-          name: file.name,
+          id: pdf.id,
+          name: pdf.name,
           document,
           numPages: document.numPages,
         });
       }
-      setDocuments((prev) => [...prev, ...newDocs]);
+      setDocuments(newDocs);
     } catch (err: any) {
       setError(err.message || "Failed to load PDFs");
     } finally {
@@ -73,5 +64,5 @@ export function usePdfLoader() {
     }))
   );
 
-  return { documents, allPages, loadPdfs, clearPdfs, isLoading, error };
+  return { documents, allPages, loadFromUrls, clearPdfs, isLoading, error };
 }

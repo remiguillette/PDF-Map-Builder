@@ -1,27 +1,38 @@
-import { useRef } from "react";
+import { useEffect } from "react";
 import { usePdfLoader } from "@/hooks/use-pdf";
-import { PdfUploader } from "@/components/pdf-uploader";
 import { PdfMap } from "@/components/pdf-map";
+import preloadedPdfs from "@/pdf-registry";
+import { FileText } from "lucide-react";
 
 export default function Home() {
-  const { allPages, documents, loadPdfs, isLoading } = usePdfLoader();
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { allPages, documents, loadFromUrls, isLoading, error } = usePdfLoader();
 
-  const handleUploadClick = () => {
-    fileInputRef.current?.click();
-  };
+  useEffect(() => {
+    loadFromUrls(preloadedPdfs);
+  }, [loadFromUrls]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.length) {
-      const files = Array.from(e.target.files).filter(
-        (f) => f.type === "application/pdf"
-      );
-      loadPdfs(files);
-    }
-  };
-
-  if (allPages.length === 0) {
-    return <PdfUploader onUpload={loadPdfs} isLoading={isLoading} />;
+  if (isLoading || allPages.length === 0) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <div className="rounded-full bg-card p-5 shadow-sm ring-1 ring-border">
+            {isLoading ? (
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+            ) : (
+              <FileText className="h-8 w-8 text-muted-foreground" />
+            )}
+          </div>
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-foreground">
+              {isLoading ? "Loading documents…" : error ? "Failed to load" : "No documents"}
+            </p>
+            {error && (
+              <p className="text-xs text-destructive">{error}</p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -30,16 +41,6 @@ export default function Home() {
         pages={allPages}
         documents={documents}
         fileCount={documents.length}
-        onUploadClick={handleUploadClick}
-      />
-
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="application/pdf"
-        multiple
-        className="hidden"
-        onChange={handleFileChange}
       />
     </div>
   );

@@ -10,7 +10,6 @@ interface PdfMapProps {
   pages: PdfPageInfo[];
   documents: PdfDocumentInfo[];
   fileCount: number;
-  onUploadClick: () => void;
 }
 
 const CANVAS_WIDTH = 8000;
@@ -18,12 +17,7 @@ const CANVAS_HEIGHT = 6000;
 const PAGE_START_X = 80;
 const PAGE_START_Y = 80;
 
-export function PdfMap({
-  pages,
-  documents,
-  fileCount,
-  onUploadClick,
-}: PdfMapProps) {
+export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
   const pageIds = useMemo(
     () => pages.map((p) => `${p.pdfId}-${p.pageNumber}`),
     [pages],
@@ -71,7 +65,6 @@ export function PdfMap({
         <PdfToolbar
           pageCount={pages.length}
           fileCount={fileCount}
-          onUploadClick={onUploadClick}
         />
       </TransformWrapper>
     </div>
