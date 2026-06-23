@@ -98,6 +98,7 @@ function CanvasPageComponent({
         {shouldRenderTile ? (
           <PdfTile
             page={page}
+            getScale={getScale}
             onDimensionsChange={(size) => onSizeChange?.(pageId, size)}
           />
         ) : (

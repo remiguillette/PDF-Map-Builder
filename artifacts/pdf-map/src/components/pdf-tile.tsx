@@ -5,13 +5,14 @@ import { cn } from "@/lib/utils";
 
 interface PdfTileProps {
   page: PdfPageInfo;
+  getScale?: () => number;
   onDimensionsChange?: (size: { width: number; height: number }) => void;
 }
 
 const BASE_SCALE = 1.5;
 const INITIAL_RENDER_ZOOM = 1;
-const MAX_RENDER_ZOOM = 2;
-const MAX_CANVAS_PIXELS = 8_000_000;
+const MAX_RENDER_ZOOM = 10;
+const MAX_CANVAS_PIXELS = 16_000_000;
 const RERENDER_ZOOM_THRESHOLD = 0.25;
 const ZOOM_IDLE_EVENT = "pdf-map:zoom-idle";
 
@@ -39,7 +40,7 @@ function getBoundedRenderScale(
   );
 }
 
-export function PdfTile({ page, onDimensionsChange }: PdfTileProps) {
+export function PdfTile({ page, getScale, onDimensionsChange }: PdfTileProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isRendered, setIsRendered] = useState(false);
   const [displayDimensions, setDisplayDimensions] = useState({
@@ -106,9 +107,11 @@ export function PdfTile({ page, onDimensionsChange }: PdfTileProps) {
   );
 
   useEffect(() => {
+    const initialZoom = getScale ? getScale() : INITIAL_RENDER_ZOOM;
+
     lastRenderedZoomRef.current = 0;
     setIsRendered(false);
-    renderAtScale(INITIAL_RENDER_ZOOM);
+    renderAtScale(initialZoom);
 
     return () => {
       if (renderTaskRef.current) {
