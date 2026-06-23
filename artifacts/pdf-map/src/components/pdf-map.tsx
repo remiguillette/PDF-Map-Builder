@@ -52,9 +52,6 @@ export function PdfMap({
     width: 0,
     height: 0,
   });
-  const [pageSizes, setPageSizes] = useState<
-    Record<string, { width: number; height: number }>
-  >({});
 
   const getScale = useCallback(() => transformRef.current.scale, []);
 
@@ -76,19 +73,6 @@ export function PdfMap({
           return current;
         }
         return nextTransform;
-      });
-    },
-    [],
-  );
-
-  const handlePageSizeChange = useCallback(
-    (id: string, size: { width: number; height: number }) => {
-      setPageSizes((current) => {
-        const existing = current[id];
-        if (existing?.width === size.width && existing.height === size.height) {
-          return current;
-        }
-        return { ...current, [id]: size };
       });
     },
     [],
@@ -121,17 +105,25 @@ export function PdfMap({
       pages.map((page) => {
         const id = `${page.pdfId}-${page.pageNumber}`;
         const position = positions[id] ?? DEFAULT_PAGE_POSITION;
-        const size = pageSizes[id] ?? DEFAULT_PAGE_BOUNDS;
+        if (page.width === null || page.height === null) {
+          return {
+            id,
+            x: position.x,
+            y: position.y,
+            width: DEFAULT_PAGE_BOUNDS.width,
+            height: DEFAULT_PAGE_BOUNDS.height,
+          };
+        }
 
         return {
           id,
           x: position.x,
           y: position.y,
-          width: size.width,
-          height: size.height,
+          width: page.width,
+          height: page.height,
         };
       }),
-    [pages, pageSizes, positions],
+    [pages, positions],
   );
 
   const pagesById = useMemo(
@@ -164,11 +156,13 @@ export function PdfMap({
       .map((id) => {
         const page = pagesById.get(id);
         const layout = pageLayoutById.get(id);
-        if (!page || !layout) return null;
+        if (!page || !layout || page.width === null || page.height === null) {
+          return null;
+        }
 
         return {
           ...layout,
-          documentId: page.pdfId,
+          documentId: page.documentId,
           pageNumber: page.pageNumber,
         };
       })
@@ -212,7 +206,14 @@ export function PdfMap({
             {visiblePageIds.map((id) => {
               const page = pagesById.get(id);
               const layout = pageLayoutById.get(id);
-              if (!page || !layout) return null;
+              if (
+                !page ||
+                !layout ||
+                page.width === null ||
+                page.height === null
+              ) {
+                return null;
+              }
 
               return (
                 <CanvasPage
@@ -220,7 +221,6 @@ export function PdfMap({
                   page={page}
                   position={{ x: layout.x, y: layout.y }}
                   onPositionChange={updatePosition}
-                  onSizeChange={handlePageSizeChange}
                   getScale={getScale}
                   renderSchedule={renderSchedule}
                 />
