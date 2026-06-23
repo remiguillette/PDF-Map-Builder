@@ -23,6 +23,7 @@ const CANVAS_WIDTH = 8000;
 const CANVAS_HEIGHT = 6000;
 const PAGE_START_X = 80;
 const PAGE_START_Y = 80;
+const DEFAULT_PAGE_POSITION = { x: PAGE_START_X, y: PAGE_START_Y };
 const ZOOM_IDLE_EVENT = "pdf-map:zoom-idle";
 const ZOOM_IDLE_DELAY_MS = 250;
 
@@ -40,6 +41,8 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
   const { positions, updatePosition } = useCanvasPositions(pageIds);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const zoomIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const zoomIdleCallbackRef = useRef<number | null>(null);
+  const transformRef = useRef<CanvasTransform>(INITIAL_TRANSFORM);
   const [transform, setTransform] =
     useState<CanvasTransform>(INITIAL_TRANSFORM);
   const [viewportSize, setViewportSize] = useState<ViewportSize>({
@@ -50,25 +53,57 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
     Record<string, { width: number; height: number }>
   >({});
 
+  const getScale = useCallback(() => transformRef.current.scale, []);
+
   const scheduleZoomIdle = useCallback((scale: number) => {
     if (zoomIdleTimerRef.current) {
       clearTimeout(zoomIdleTimerRef.current);
     }
+    if (zoomIdleCallbackRef.current !== null) {
+      window.cancelIdleCallback?.(zoomIdleCallbackRef.current);
+      zoomIdleCallbackRef.current = null;
+    }
 
     zoomIdleTimerRef.current = setTimeout(() => {
-      window.dispatchEvent(
-        new CustomEvent(ZOOM_IDLE_EVENT, { detail: { scale } }),
-      );
-      zoomIdleTimerRef.current = null;
+      const dispatchZoomIdle = () => {
+        window.dispatchEvent(
+          new CustomEvent(ZOOM_IDLE_EVENT, { detail: { scale } }),
+        );
+        zoomIdleTimerRef.current = null;
+        zoomIdleCallbackRef.current = null;
+      };
+
+      if ("requestIdleCallback" in window) {
+        zoomIdleCallbackRef.current = window.requestIdleCallback(
+          dispatchZoomIdle,
+          {
+            timeout: ZOOM_IDLE_DELAY_MS,
+          },
+        );
+      } else {
+        dispatchZoomIdle();
+      }
     }, ZOOM_IDLE_DELAY_MS);
   }, []);
 
   const updateTransform = useCallback(
     (state: { scale: number; positionX: number; positionY: number }) => {
-      setTransform({
+      const nextTransform = {
         scale: state.scale,
         positionX: state.positionX,
         positionY: state.positionY,
+      };
+
+      transformRef.current = nextTransform;
+      setTransform((current) => {
+        if (
+          current.scale === nextTransform.scale &&
+          current.positionX === nextTransform.positionX &&
+          current.positionY === nextTransform.positionY
+        ) {
+          return current;
+        }
+        return nextTransform;
       });
     },
     [],
@@ -109,6 +144,9 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
       if (zoomIdleTimerRef.current) {
         clearTimeout(zoomIdleTimerRef.current);
       }
+      if (zoomIdleCallbackRef.current !== null) {
+        window.cancelIdleCallback?.(zoomIdleCallbackRef.current);
+      }
     };
   }, []);
 
@@ -122,7 +160,7 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
 
     for (const page of pages) {
       const id = `${page.pdfId}-${page.pageNumber}`;
-      const position = positions[id] ?? { x: PAGE_START_X, y: PAGE_START_Y };
+      const position = positions[id] ?? DEFAULT_PAGE_POSITION;
       const size = pageSizes[id] ?? DEFAULT_PAGE_BOUNDS;
 
       if (
@@ -178,13 +216,12 @@ export function PdfMap({ pages, documents, fileCount }: PdfMapProps) {
                 <CanvasPage
                   key={id}
                   page={page}
-                  position={
-                    positions[id] ?? { x: PAGE_START_X, y: PAGE_START_Y }
-                  }
+                  position={positions[id] ?? DEFAULT_PAGE_POSITION}
                   onPositionChange={updatePosition}
                   shouldRenderTile={visiblePageIds.has(id)}
                   placeholderSize={size}
                   onSizeChange={handlePageSizeChange}
+                  getScale={getScale}
                 />
               );
             })}

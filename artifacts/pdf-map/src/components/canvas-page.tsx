@@ -1,5 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from "react";
-import { useTransformContext } from "react-zoom-pan-pinch";
+import { memo, useRef, useState, useEffect, useCallback } from "react";
 import { PdfPageInfo } from "@/hooks/use-pdf";
 import { PdfTile } from "./pdf-tile";
 
@@ -10,17 +9,18 @@ interface CanvasPageProps {
   shouldRenderTile?: boolean;
   placeholderSize: { width: number; height: number };
   onSizeChange?: (id: string, size: { width: number; height: number }) => void;
+  getScale: () => number;
 }
 
-export function CanvasPage({
+function CanvasPageComponent({
   page,
   position,
   onPositionChange,
   shouldRenderTile = true,
   placeholderSize,
   onSizeChange,
+  getScale,
 }: CanvasPageProps) {
-  const context = useTransformContext();
   const [isDragging, setIsDragging] = useState(false);
   const startRef = useRef<{
     mouseX: number;
@@ -51,7 +51,7 @@ export function CanvasPage({
 
     const onMouseMove = (e: MouseEvent) => {
       if (!startRef.current) return;
-      const scale = context.state.scale;
+      const scale = getScale();
       const dx = (e.clientX - startRef.current.mouseX) / scale;
       const dy = (e.clientY - startRef.current.mouseY) / scale;
       onPositionChange(
@@ -72,7 +72,7 @@ export function CanvasPage({
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
     };
-  }, [isDragging, context, pageId, onPositionChange]);
+  }, [isDragging, getScale, pageId, onPositionChange]);
 
   return (
     <div
@@ -118,3 +118,17 @@ export function CanvasPage({
     </div>
   );
 }
+
+export const CanvasPage = memo(CanvasPageComponent, (prev, next) => {
+  return (
+    prev.page === next.page &&
+    prev.position.x === next.position.x &&
+    prev.position.y === next.position.y &&
+    prev.onPositionChange === next.onPositionChange &&
+    prev.shouldRenderTile === next.shouldRenderTile &&
+    prev.placeholderSize.width === next.placeholderSize.width &&
+    prev.placeholderSize.height === next.placeholderSize.height &&
+    prev.onSizeChange === next.onSizeChange &&
+    prev.getScale === next.getScale
+  );
+});
