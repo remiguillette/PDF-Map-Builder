@@ -103,6 +103,7 @@ export function usePdfLoader() {
     Record<string, PdfPageMetadata>
   >({});
   const loadingTasksRef = useRef<Set<DestroyablePdfLoadingTask>>(new Set());
+  const objectUrlsRef = useRef<string[]>([]);
   const loadGenerationRef = useRef(0);
 
   const cancelLoadingTasks = useCallback(() => {
@@ -112,11 +113,19 @@ export function usePdfLoader() {
     loadingTasksRef.current.clear();
   }, []);
 
+  const revokeObjectUrls = useCallback(() => {
+    for (const objectUrl of objectUrlsRef.current) {
+      URL.revokeObjectURL(objectUrl);
+    }
+    objectUrlsRef.current = [];
+  }, []);
+
   const loadFromUrls = useCallback(
     async (pdfs: PreloadedPdf[]) => {
       const loadGeneration = loadGenerationRef.current + 1;
       loadGenerationRef.current = loadGeneration;
       cancelLoadingTasks();
+      revokeObjectUrls();
       setIsLoading(true);
       setError(null);
       setPageMetadata({});
@@ -174,12 +183,82 @@ export function usePdfLoader() {
         }
       }
     },
-    [cancelLoadingTasks],
+    [cancelLoadingTasks, revokeObjectUrls],
+  );
+
+  const loadFromFiles = useCallback(
+    async (files: File[]) => {
+      const loadGeneration = loadGenerationRef.current + 1;
+      loadGenerationRef.current = loadGeneration;
+      cancelLoadingTasks();
+      revokeObjectUrls();
+      setIsLoading(true);
+      setError(null);
+      setPageMetadata({});
+
+      const objectUrls = files.map((file) => URL.createObjectURL(file));
+      objectUrlsRef.current = objectUrls;
+      const newDocs: PdfDocumentInfo[] = [];
+
+      try {
+        for (const [index, file] of files.entries()) {
+          const objectUrl = objectUrls[index];
+          const loadingTask = pdfjsLib.getDocument({
+            url: objectUrl,
+            rangeChunkSize: PDF_RANGE_CHUNK_SIZE,
+            disableAutoFetch: true,
+            disableStream: false,
+          }) as DestroyablePdfLoadingTask;
+
+          loadingTasksRef.current.add(loadingTask);
+          const document = await loadingTask.promise.finally(() => {
+            loadingTasksRef.current.delete(loadingTask);
+          });
+
+          if (loadGenerationRef.current !== loadGeneration) {
+            void (document as DestroyablePdfDocument).destroy();
+            continue;
+          }
+
+          newDocs.push({
+            id: `uploaded-${index}-${file.name}-${file.lastModified}`,
+            name: file.name,
+            document,
+            numPages: document.numPages,
+          });
+        }
+
+        if (loadGenerationRef.current !== loadGeneration) {
+          destroyDocuments(newDocs);
+          return;
+        }
+
+        setDocuments((previousDocs) => {
+          destroyDocuments(previousDocs);
+          return newDocs;
+        });
+      } catch (err: any) {
+        if (loadGenerationRef.current !== loadGeneration) {
+          destroyDocuments(newDocs);
+          return;
+        }
+
+        destroyDocuments(newDocs);
+        revokeObjectUrls();
+        setError(err.message || "Failed to load PDFs");
+      } finally {
+        if (loadGenerationRef.current === loadGeneration) {
+          setIsLoading(false);
+        }
+      }
+    },
+    [cancelLoadingTasks, revokeObjectUrls],
   );
 
   const clearPdfs = useCallback(() => {
     loadGenerationRef.current += 1;
     cancelLoadingTasks();
+    revokeObjectUrls();
     setDocuments((previousDocs) => {
       destroyDocuments(previousDocs);
       return [];
@@ -187,7 +266,14 @@ export function usePdfLoader() {
     setIsLoading(false);
     setPageMetadata({});
     setError(null);
-  }, [cancelLoadingTasks]);
+  }, [cancelLoadingTasks, revokeObjectUrls]);
+
+  useEffect(() => {
+    return () => {
+      cancelLoadingTasks();
+      revokeObjectUrls();
+    };
+  }, [cancelLoadingTasks, revokeObjectUrls]);
 
   useEffect(() => {
     const metadataGeneration = loadGenerationRef.current;
@@ -262,5 +348,13 @@ export function usePdfLoader() {
     }),
   );
 
-  return { documents, allPages, loadFromUrls, clearPdfs, isLoading, error };
+  return {
+    documents,
+    allPages,
+    loadFromUrls,
+    loadFromFiles,
+    clearPdfs,
+    isLoading,
+    error,
+  };
 }
