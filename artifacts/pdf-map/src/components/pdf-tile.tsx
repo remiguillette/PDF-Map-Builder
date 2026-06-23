@@ -23,6 +23,18 @@ type TileKeyParts = {
 type CachedTile = {
   bitmap: ImageBitmap;
   bytes: number;
+  documentId: string;
+  pageNumber: number;
+};
+
+type TrackedPdfPage = pdfjsLib.PDFPageProxy & {
+  cleanup?: () => boolean;
+};
+
+type PageCacheEntry = {
+  page: TrackedPdfPage;
+  activeTasks: number;
+  refCount: number;
 };
 
 type TileInfo = {
@@ -41,62 +53,139 @@ const PREVIEW_SCALE = 0.25;
 const MAX_TILE_CACHE_BYTES = 192 * 1024 * 1024;
 const MAX_TILE_CACHE_ENTRIES = 256;
 
-class TileBitmapCache {
-  private entries = new Map<string, CachedTile>();
-  private bytes = 0;
+class PdfRenderCacheManager {
+  private pages = new Map<string, PageCacheEntry>();
+  private tiles = new Map<string, CachedTile>();
+  private tileBytes = 0;
 
-  get(key: string) {
-    const entry = this.entries.get(key);
+  async getPage(page: PdfPageInfo) {
+    const key = this.getPageKey(page.pdfId, page.pageNumber);
+    const cached = this.pages.get(key);
+    if (cached) {
+      cached.refCount += 1;
+      return cached.page;
+    }
+
+    const pdfPage = (await page.document.getPage(
+      page.pageNumber,
+    )) as TrackedPdfPage;
+    const racingEntry = this.pages.get(key);
+    if (racingEntry) {
+      racingEntry.refCount += 1;
+      this.cleanupPageWhenIdle(pdfPage);
+      return racingEntry.page;
+    }
+
+    this.pages.set(key, {
+      page: pdfPage,
+      activeTasks: 0,
+      refCount: 1,
+    });
+    return pdfPage;
+  }
+
+  releasePage(documentId: string, pageNumber: number) {
+    const key = this.getPageKey(documentId, pageNumber);
+    const entry = this.pages.get(key);
+    if (!entry) return;
+
+    entry.refCount = Math.max(0, entry.refCount - 1);
+    if (entry.refCount === 0 && entry.activeTasks === 0) {
+      this.cleanupPageWhenIdle(entry.page);
+      this.pages.delete(key);
+    }
+  }
+
+  beginPageRender(documentId: string, pageNumber: number) {
+    const entry = this.pages.get(this.getPageKey(documentId, pageNumber));
+    if (entry) entry.activeTasks += 1;
+  }
+
+  finishPageRender(documentId: string, pageNumber: number) {
+    const key = this.getPageKey(documentId, pageNumber);
+    const entry = this.pages.get(key);
+    if (!entry) return;
+
+    entry.activeTasks = Math.max(0, entry.activeTasks - 1);
+    if (entry.activeTasks === 0) {
+      this.cleanupPageWhenIdle(entry.page);
+      if (entry.refCount === 0) this.pages.delete(key);
+    }
+  }
+
+  getTile(key: string) {
+    const entry = this.tiles.get(key);
     if (!entry) return undefined;
 
-    this.entries.delete(key);
-    this.entries.set(key, entry);
+    this.tiles.delete(key);
+    this.tiles.set(key, entry);
     return entry.bitmap;
   }
 
-  set(key: string, bitmap: ImageBitmap, bytes: number) {
-    const previous = this.entries.get(key);
+  setTile(
+    key: string,
+    bitmap: ImageBitmap,
+    bytes: number,
+    documentId: string,
+    pageNumber: number,
+  ) {
+    const previous = this.tiles.get(key);
     if (previous) {
-      previous.bitmap.close();
-      this.bytes -= previous.bytes;
-      this.entries.delete(key);
+      this.disposeTile(previous);
+      this.tiles.delete(key);
     }
 
-    this.entries.set(key, { bitmap, bytes });
-    this.bytes += bytes;
-    this.evictIfNeeded();
+    this.tiles.set(key, { bitmap, bytes, documentId, pageNumber });
+    this.tileBytes += bytes;
+    this.evictTilesIfNeeded();
   }
 
-  evictOversized(maxScaleBucket: number) {
-    for (const [key, entry] of this.entries) {
+  evictOversizedTiles(maxScaleBucket: number) {
+    for (const [key, entry] of this.tiles) {
       const scaleBucket = Number(key.split(":")[4]);
       if (Number.isFinite(scaleBucket) && scaleBucket > maxScaleBucket) {
-        entry.bitmap.close();
-        this.bytes -= entry.bytes;
-        this.entries.delete(key);
+        this.disposeTile(entry);
+        this.tiles.delete(key);
       }
     }
   }
 
-  private evictIfNeeded() {
+  clearCanvasBackingStore(canvas: HTMLCanvasElement | OffscreenCanvas) {
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+
+  private evictTilesIfNeeded() {
     while (
-      this.bytes > MAX_TILE_CACHE_BYTES ||
-      this.entries.size > MAX_TILE_CACHE_ENTRIES
+      this.tileBytes > MAX_TILE_CACHE_BYTES ||
+      this.tiles.size > MAX_TILE_CACHE_ENTRIES
     ) {
-      const oldest = this.entries.entries().next().value as
+      const oldest = this.tiles.entries().next().value as
         | [string, CachedTile]
         | undefined;
       if (!oldest) return;
 
       const [key, entry] = oldest;
-      entry.bitmap.close();
-      this.bytes -= entry.bytes;
-      this.entries.delete(key);
+      this.disposeTile(entry);
+      this.tiles.delete(key);
     }
+  }
+
+  private disposeTile(entry: CachedTile) {
+    entry.bitmap.close();
+    this.tileBytes -= entry.bytes;
+  }
+
+  private cleanupPageWhenIdle(pdfPage: TrackedPdfPage) {
+    pdfPage.cleanup?.();
+  }
+
+  private getPageKey(documentId: string, pageNumber: number) {
+    return `${documentId}:${pageNumber}`;
   }
 }
 
-const tileCache = new TileBitmapCache();
+const pdfRenderCacheManager = new PdfRenderCacheManager();
 
 function getTileKey(parts: TileKeyParts) {
   return [
@@ -188,6 +277,7 @@ function PdfPageTile({
     if (!isVisible) return;
 
     let isCancelled = false;
+    let hasPageLease = false;
     const generation = renderGeneration;
     const metrics = getTileRenderMetrics(tile, scaleBucket, devicePixelRatio);
     const key = getTileKey({
@@ -200,7 +290,7 @@ function PdfPageTile({
       devicePixelRatio: metrics.devicePixelRatio,
     });
 
-    const cached = tileCache.get(key);
+    const cached = pdfRenderCacheManager.getTile(key);
     if (cached && canvasRef.current) {
       drawBitmapToCanvas(canvasRef.current, cached, tile);
       setIsRendered(true);
@@ -211,8 +301,11 @@ function PdfPageTile({
 
     void (async () => {
       try {
-        const pdfPage = await page.document.getPage(page.pageNumber);
-        if (isCancelled || generation !== latestGenerationRef.current) return;
+        const pdfPage = await pdfRenderCacheManager.getPage(page);
+        hasPageLease = true;
+        if (isCancelled || generation !== latestGenerationRef.current) {
+          return;
+        }
 
         const renderScale = BASE_SCALE * metrics.outputScale;
         const viewport = pdfPage.getViewport({ scale: renderScale, rotation });
@@ -234,15 +327,30 @@ function PdfPageTile({
           viewport,
         });
         renderTaskRef.current = task;
-        await task.promise;
-        context.restore();
-        renderTaskRef.current = null;
+        pdfRenderCacheManager.beginPageRender(page.pdfId, page.pageNumber);
+        try {
+          await task.promise;
+        } finally {
+          context.restore();
+          renderTaskRef.current = null;
+          pdfRenderCacheManager.finishPageRender(page.pdfId, page.pageNumber);
+        }
 
-        if (isCancelled || generation !== latestGenerationRef.current) return;
+        if (isCancelled || generation !== latestGenerationRef.current) {
+          pdfRenderCacheManager.clearCanvasBackingStore(canvas);
+          return;
+        }
 
         const bitmap = await createImageBitmap(canvas);
         const bytes = bitmap.width * bitmap.height * 4;
-        tileCache.set(key, bitmap, bytes);
+        pdfRenderCacheManager.setTile(
+          key,
+          bitmap,
+          bytes,
+          page.pdfId,
+          page.pageNumber,
+        );
+        pdfRenderCacheManager.clearCanvasBackingStore(canvas);
 
         if (canvasRef.current) {
           drawBitmapToCanvas(canvasRef.current, bitmap, tile);
@@ -251,6 +359,10 @@ function PdfPageTile({
       } catch (err: any) {
         if (err.name !== "RenderingCancelledException") {
           console.error("Error rendering PDF tile:", err);
+        }
+      } finally {
+        if (hasPageLease) {
+          pdfRenderCacheManager.releasePage(page.pdfId, page.pageNumber);
         }
       }
     })();
@@ -331,9 +443,16 @@ export function PdfTile({
     const previewGeneration = previewGenerationRef.current + 1;
     previewGenerationRef.current = previewGeneration;
 
+    let hasPageLease = false;
+
     try {
-      const pdfPage = await page.document.getPage(page.pageNumber);
-      if (previewGeneration !== previewGenerationRef.current) return;
+      const pdfPage = await pdfRenderCacheManager.getPage(page);
+      hasPageLease = true;
+      if (previewGeneration !== previewGenerationRef.current) {
+        pdfRenderCacheManager.releasePage(page.pdfId, page.pageNumber);
+        hasPageLease = false;
+        return;
+      }
 
       const displayViewport = pdfPage.getViewport({ scale: BASE_SCALE });
       setRotation(displayViewport.rotation);
@@ -362,13 +481,22 @@ export function PdfTile({
         viewport: previewViewport,
       });
       previewRenderTaskRef.current = task;
-      await task.promise;
-      previewRenderTaskRef.current = null;
+      pdfRenderCacheManager.beginPageRender(page.pdfId, page.pageNumber);
+      try {
+        await task.promise;
+      } finally {
+        previewRenderTaskRef.current = null;
+        pdfRenderCacheManager.finishPageRender(page.pdfId, page.pageNumber);
+      }
       if (previewGeneration !== previewGenerationRef.current) return;
       setIsPreviewReady(true);
     } catch (err: any) {
       if (err.name !== "RenderingCancelledException")
         console.error("Error rendering page preview:", err);
+    } finally {
+      if (hasPageLease) {
+        pdfRenderCacheManager.releasePage(page.pdfId, page.pageNumber);
+      }
     }
   }, [page, onDimensionsChange]);
 
@@ -379,13 +507,16 @@ export function PdfTile({
       previewGenerationRef.current += 1;
       previewRenderTaskRef.current?.cancel();
       previewRenderTaskRef.current = null;
+      if (previewCanvasRef.current) {
+        pdfRenderCacheManager.clearCanvasBackingStore(previewCanvasRef.current);
+      }
     };
   }, [renderPreview]);
 
   const scaleBucket = renderSchedule.zoomBucket;
 
   useEffect(() => {
-    tileCache.evictOversized(scaleBucket + 1);
+    pdfRenderCacheManager.evictOversizedTiles(scaleBucket + 1);
   }, [scaleBucket]);
 
   return (
