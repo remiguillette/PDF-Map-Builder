@@ -21,7 +21,8 @@ function savePositions(positions: Record<string, Position>) {
 }
 
 export function useCanvasPositions(itemIds: string[]) {
-  const [positions, setPositions] = useState<Record<string, Position>>(loadPositions);
+  const [positions, setPositions] =
+    useState<Record<string, Position>>(loadPositions);
 
   useEffect(() => {
     setPositions((prev) => {
@@ -51,5 +52,16 @@ export function useCanvasPositions(itemIds: string[]) {
     });
   }, []);
 
-  return { positions, updatePosition };
+  const updatePositions = useCallback(
+    (nextPositions: Record<string, Position>) => {
+      setPositions((prev) => {
+        const next = { ...prev, ...nextPositions };
+        savePositions(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  return { positions, updatePosition, updatePositions };
 }

@@ -1,7 +1,6 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { PdfPageInfo, PdfDocumentInfo } from "@/hooks/use-pdf";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
-import { PdfTile } from "./pdf-tile";
 import { PdfToolbar } from "./pdf-toolbar";
 import { CanvasPage } from "./canvas-page";
 import { GridBackground } from "./grid-background";
@@ -20,6 +19,13 @@ interface PdfMapProps {
   setMode: (mode: ViewMode) => void;
 }
 
+const CANVAS_WIDTH = 8000;
+const CANVAS_HEIGHT = 6000;
+const PAGE_GAP_X = 760;
+const PAGE_GAP_Y = 1020;
+const PAGE_START_X = 80;
+const PAGE_START_Y = 80;
+
 export function PdfMap({
   pages,
   documents,
@@ -32,9 +38,40 @@ export function PdfMap({
 }: PdfMapProps) {
   const pageIds = useMemo(
     () => pages.map((p) => `${p.pdfId}-${p.pageNumber}`),
-    [pages]
+    [pages],
   );
-  const { positions, updatePosition } = useCanvasPositions(pageIds);
+  const { positions, updatePosition, updatePositions } =
+    useCanvasPositions(pageIds);
+
+  const arrangePages = useCallback(
+    (columnCount = columns) => {
+      const arrangedPositions = Object.fromEntries(
+        pages.map((page, index) => {
+          const id = `${page.pdfId}-${page.pageNumber}`;
+          const col = index % columnCount;
+          const row = Math.floor(index / columnCount);
+          return [
+            id,
+            {
+              x: PAGE_START_X + col * PAGE_GAP_X,
+              y: PAGE_START_Y + row * PAGE_GAP_Y,
+            },
+          ];
+        }),
+      );
+
+      updatePositions(arrangedPositions);
+    },
+    [columns, pages, updatePositions],
+  );
+
+  const handleArrangeColumns = useCallback(
+    (columnCount: number) => {
+      setColumns(columnCount);
+      arrangePages(columnCount);
+    },
+    [arrangePages, setColumns],
+  );
 
   return (
     <div className="h-screen w-full bg-background overflow-hidden select-none relative">
@@ -48,57 +85,41 @@ export function PdfMap({
         panning={{ velocityDisabled: false }}
         doubleClick={{ disabled: true }}
       >
-        {mode === "canvas" && <GridBackground show={true} />}
+        <GridBackground show={mode === "canvas"} />
 
-        <TransformComponent
-          wrapperClass="!w-full !h-full"
-          contentClass={mode === "grid" ? "p-[10vh]" : ""}
-        >
-          {mode === "grid" ? (
-            <div
-              className="grid gap-12 place-items-center"
-              style={{
-                gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-              }}
-            >
-              {pages.map((page) => (
-                <PdfTile
-                  key={`${page.pdfId}-${page.pageNumber}`}
+        <TransformComponent wrapperClass="!w-full !h-full">
+          <div
+            style={{
+              position: "relative",
+              width: CANVAS_WIDTH,
+              height: CANVAS_HEIGHT,
+            }}
+          >
+            {pages.map((page) => {
+              const id = `${page.pdfId}-${page.pageNumber}`;
+              return (
+                <CanvasPage
+                  key={id}
                   page={page}
+                  position={
+                    positions[id] ?? { x: PAGE_START_X, y: PAGE_START_Y }
+                  }
+                  onPositionChange={updatePosition}
                 />
-              ))}
-            </div>
-          ) : (
-            <div
-              style={{
-                position: "relative",
-                width: 8000,
-                height: 6000,
-              }}
-            >
-              {pages.map((page) => {
-                const id = `${page.pdfId}-${page.pageNumber}`;
-                return (
-                  <CanvasPage
-                    key={id}
-                    page={page}
-                    position={positions[id] ?? { x: 80, y: 80 }}
-                    onPositionChange={updatePosition}
-                  />
-                );
-              })}
-            </div>
-          )}
+              );
+            })}
+          </div>
         </TransformComponent>
 
         <PdfToolbar
           columns={columns}
-          setColumns={setColumns}
+          setColumns={handleArrangeColumns}
           pageCount={pages.length}
           fileCount={fileCount}
           onUploadClick={onUploadClick}
           mode={mode}
           setMode={setMode}
+          onAutoArrange={() => arrangePages()}
         />
       </TransformWrapper>
     </div>
