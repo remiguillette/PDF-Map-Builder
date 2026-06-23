@@ -115,6 +115,14 @@ export function PdfTile({ page, onDimensionsChange }: PdfTileProps) {
         renderTaskRef.current.cancel();
         renderTaskRef.current = null;
       }
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const context = canvas.getContext("2d");
+      context?.clearRect(0, 0, canvas.width, canvas.height);
+      canvas.width = 0;
+      canvas.height = 0;
     };
   }, [page, renderAtScale]);
 

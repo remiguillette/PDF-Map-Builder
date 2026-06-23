@@ -21,6 +21,16 @@ export type PdfPageInfo = {
   document: pdfjsLib.PDFDocumentProxy;
 };
 
+type DestroyablePdfDocument = pdfjsLib.PDFDocumentProxy & {
+  destroy: () => Promise<void>;
+};
+
+function destroyDocuments(documentsToDestroy: PdfDocumentInfo[]) {
+  for (const { document } of documentsToDestroy) {
+    void (document as DestroyablePdfDocument).destroy();
+  }
+}
+
 export function usePdfLoader() {
   const [documents, setDocuments] = useState<PdfDocumentInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -29,8 +39,9 @@ export function usePdfLoader() {
   const loadFromUrls = useCallback(async (pdfs: PreloadedPdf[]) => {
     setIsLoading(true);
     setError(null);
+
+    const newDocs: PdfDocumentInfo[] = [];
     try {
-      const newDocs: PdfDocumentInfo[] = [];
       for (const pdf of pdfs) {
         const response = await fetch(pdf.path);
         if (!response.ok) throw new Error(`Failed to fetch ${pdf.name}: ${response.status}`);
@@ -43,8 +54,12 @@ export function usePdfLoader() {
           numPages: document.numPages,
         });
       }
-      setDocuments(newDocs);
+      setDocuments((previousDocs) => {
+        destroyDocuments(previousDocs);
+        return newDocs;
+      });
     } catch (err: any) {
+      destroyDocuments(newDocs);
       setError(err.message || "Failed to load PDFs");
     } finally {
       setIsLoading(false);
@@ -52,7 +67,10 @@ export function usePdfLoader() {
   }, []);
 
   const clearPdfs = useCallback(() => {
-    setDocuments([]);
+    setDocuments((previousDocs) => {
+      destroyDocuments(previousDocs);
+      return [];
+    });
   }, []);
 
   const allPages: PdfPageInfo[] = documents.flatMap((doc) =>
